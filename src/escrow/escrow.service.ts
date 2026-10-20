@@ -47,13 +47,14 @@ export type EscrowWithPaymentUrl = EscrowRecord & {
 /** Parsed Soroban event forwarded from the blockchain listener. */
 export interface SorobanChainEvent {
   /** Soroban event name: EscrowFunded | EscrowShipped | EscrowCompleted |
-   *  DisputeRaised | DisputeResolved | AutoReleased */
+   *  DisputeRaised | DisputeResolved | AutoReleased | EscrowAutoCancelled |
+   *  EscrowExpired | RefundApproved */
   eventType: string;
   /** Trust-Link escrow ID stored in the contract. */
   escrowId: string;
   /** For EscrowShipped — on-chain tracking reference. */
   trackingId?: string;
-  /** For AutoReleased — on-chain transaction hash. */
+  /** For AutoReleased — on-chain transaction hash or event id. */
   txHash?: string;
   /** For DisputeRaised — reason/description surfaced from contract data. */
   reason?: string;
@@ -1229,6 +1230,39 @@ export class EscrowService {
           .catch((err) =>
             this.logger.error('notifyCompleted(auto-released) failed', err),
           );
+        return { skipped: false };
+      }
+
+      case 'EscrowAutoCancelled': {
+        if (escrow.state === 'CANCELLED' || TERMINAL_STATES.has(escrow.state)) {
+          return { skipped: true, reason: 'already_cancelled_or_terminal' };
+        }
+        const cancelled = await this.escrowRepository.markCancelled(escrowId);
+        this.notificationsService
+          .notifyCancelled(cancelled)
+          .catch((err) => this.logger.error('notifyCancelled(auto-cancel) failed', err));
+        return { skipped: false };
+      }
+
+      case 'EscrowExpired': {
+        if (escrow.state === 'REFUNDED' || TERMINAL_STATES.has(escrow.state)) {
+          return { skipped: true, reason: 'already_refunded_or_terminal' };
+        }
+        const refunded = await this.escrowRepository.markRefunded(escrowId);
+        this.notificationsService
+          .notifyCancelled(refunded)
+          .catch((err) => this.logger.error('notifyCancelled(expired) failed', err));
+        return { skipped: false };
+      }
+
+      case 'RefundApproved': {
+        if (escrow.state === 'REFUNDED' || TERMINAL_STATES.has(escrow.state)) {
+          return { skipped: true, reason: 'already_refunded_or_terminal' };
+        }
+        const refunded = await this.escrowRepository.markRefunded(escrowId);
+        this.notificationsService
+          .notifyCancelled(refunded)
+          .catch((err) => this.logger.error('notifyCancelled(refund-approved) failed', err));
         return { skipped: false };
       }
 

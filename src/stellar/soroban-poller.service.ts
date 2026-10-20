@@ -81,11 +81,15 @@ interface GetEventsResponse {
  * Topic pairs whose naive concatenation does not match a `syncStateFromChain`
  * case. The contract emits auto-release under ("Escrow", "Released"), which
  * concatenates to "EscrowReleased"; the handler's case is "AutoReleased".
+ * Also handles auto-cancel and refund events which map to new state transitions.
  */
 const EVENT_TYPE_OVERRIDES: Readonly<Record<string, string>> = {
   EscrowReleased: 'AutoReleased',
   EscrowCanceled: 'EscrowCancelled',
   EscrowCancelled: 'EscrowCancelled',
+  EscrowAutoCncl: 'EscrowAutoCancelled',
+  EscrowExpired: 'EscrowExpired',
+  RefundApproved: 'RefundApproved',
 };
 
 /**
@@ -246,11 +250,19 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
       const rawEvents = await this.fetchEvents(cursor);
 
       if (rawEvents.length === 0) {
-        // Issue #917: Advance cursor even when contract is quiet so startLedger stays fresh
+        // Issue #1042: Advance cursor when contract is quiet to prevent stale paging tokens.
+        // For ledger: prefixed cursors, update to current ledger margin.
+        // For paging tokens, advance by fetching the latest ledger and converting to a fresh token.
         const latestLedger = await this.getLatestLedger().catch(() => null);
-        if (latestLedger && cursor.startsWith(LEDGER_CURSOR_PREFIX)) {
-          const newStartLedger = Math.max(1, latestLedger - START_LEDGER_MARGIN);
-          await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`, CursorService.SOROBAN_POLLER_KEY);
+        if (latestLedger) {
+          if (cursor.startsWith(LEDGER_CURSOR_PREFIX)) {
+            const newStartLedger = Math.max(1, latestLedger - START_LEDGER_MARGIN);
+            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`, CursorService.SOROBAN_POLLER_KEY);
+          } else {
+            // Paging token cursor: reset to a fresh ledger cursor to avoid stale token retention error
+            const newStartLedger = Math.max(1, latestLedger - START_LEDGER_MARGIN);
+            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`, CursorService.SOROBAN_POLLER_KEY);
+          }
         }
         return;
       }
@@ -541,6 +553,12 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      // Issue #1043: For AutoReleased events, use the RPC event's id as the transaction hash
+      // since the contract payload does not include a txHash field.
+      const txHashValue = eventType === 'AutoReleased'
+        ? raw.id
+        : (typeof data?.txHash === 'string' ? data.txHash : undefined);
+
       await this.escrowService.syncStateFromChain({
         eventType,
         escrowId,
@@ -550,7 +568,7 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
             : typeof data?.trackingId === 'string'
               ? data.trackingId
               : undefined,
-        txHash: typeof data?.txHash === 'string' ? data.txHash : undefined,
+        txHash: txHashValue,
         reason: typeof data?.reason === 'string' ? data.reason : undefined,
       });
       this.syncRetryCounts.delete(raw.id);

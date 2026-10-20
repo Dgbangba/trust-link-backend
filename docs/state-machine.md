@@ -70,11 +70,14 @@ stateDiagram-v2
 | `CREATED` | `FUNDED` | Buyer payment confirmed on-chain | `StellarWebhookService.handlePayment` |
 | `CREATED` | `FUNDED` | Chain sync event (fallback) | `EscrowService.syncStateFromChain` (`EscrowFunded`) |
 | `CREATED` | `CANCELLED` | Buyer, seller, or admin cancels | `EscrowService.cancelPendingEscrow` |
+| `CREATED` | `CANCELLED` | Auto-cancel event after timeout | `EscrowService.syncStateFromChain` (`EscrowAutoCancelled`) |
 | `FUNDED` | `SHIPPED` | Seller marks shipped with tracking ID | `EscrowService.handleShipment` |
 | `FUNDED` | `SHIPPED` | Chain sync event (fallback) | `EscrowService.syncStateFromChain` (`EscrowShipped`) |
 | `FUNDED` | `CANCELLED` | Buyer, seller, or admin cancels | `EscrowService.cancelEscrow` |
+| `FUNDED` | `REFUNDED` | Buyer reclaims funds (expired escrow) | `EscrowService.syncStateFromChain` (`EscrowExpired`) |
 | `FUNDED` | `DISPUTED` | Chain sync event (DisputeRaised) | `EscrowService.syncStateFromChain` (`DisputeRaised`) |
 | `SHIPPED` | `DELIVERED` | Carrier API reports delivery | `TrackingPollWorker.run` |
+| `SHIPPED` | `REFUNDED` | Seller approves refund on-chain | `EscrowService.syncStateFromChain` (`RefundApproved`) |
 | `DELIVERED` | `RELEASED` | Auto-release after 48h: worker submits, `AutoReleased` event finalises | `AutoReleaseWorker.run` + `EscrowService.syncStateFromChain` (`AutoReleased`) |
 | `SHIPPED` | `DISPUTED` | Chain sync event (DisputeRaised) | `EscrowService.syncStateFromChain` (`DisputeRaised`) |
 | `DELIVERED` | `DISPUTED` | Chain sync event (DisputeRaised) | `EscrowService.syncStateFromChain` (`DisputeRaised`) |
@@ -86,6 +89,9 @@ stateDiagram-v2
 | any non-terminal | `COMPLETED` | Chain sync event (EscrowCompleted) | `EscrowService.syncStateFromChain` (`EscrowCompleted`) |
 | any non-terminal | `DISPUTED` | Chain sync event (DisputeRaised) | `EscrowService.syncStateFromChain` (`DisputeRaised`) |
 | any non-terminal | `RELEASED` | Chain sync event (AutoReleased) | `EscrowService.syncStateFromChain` (`AutoReleased`) |
+| any non-terminal | `CANCELLED` | Chain sync event (EscrowAutoCancelled) | `EscrowService.syncStateFromChain` (`EscrowAutoCancelled`) |
+| any non-terminal | `REFUNDED` | Chain sync event (EscrowExpired) | `EscrowService.syncStateFromChain` (`EscrowExpired`) |
+| any non-terminal | `REFUNDED` | Chain sync event (RefundApproved) | `EscrowService.syncStateFromChain` (`RefundApproved`) |
 
 ## Terminal States
 
@@ -166,9 +172,12 @@ in a terminal state or the target state:
 | `EscrowFunded` | `FUNDED` | — |
 | `EscrowShipped` | `SHIPPED` | Stores `trackingId` |
 | `EscrowCompleted` | `COMPLETED` | — |
+| `EscrowAutoCancelled` | `CANCELLED` | Auto-cancel from contract (unfunded escrow timeout) |
+| `EscrowExpired` | `REFUNDED` | Buyer reclaims on expired FUNDED/SHIPPED escrow |
+| `RefundApproved` | `REFUNDED` | Seller approved refund, contract pays buyer |
 | `DisputeRaised` | `DISPUTED` | Creates a `Dispute` record |
 | `DisputeResolved` | `COMPLETED` | Updates dispute status to `RESOLVED` |
-| `AutoReleased` | `RELEASED` | Records on-chain `txHash` |
+| `AutoReleased` | `RELEASED` | Records on-chain `txHash` (from RPC event id) |
 
 ## Invariants
 
