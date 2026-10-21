@@ -58,6 +58,8 @@ export interface SorobanChainEvent {
   txHash?: string;
   /** For DisputeRaised — reason/description surfaced from contract data. */
   reason?: string;
+  /** For DisputeResolved — normalized resolution outcome from contract's ResolutionType. */
+  resolution?: 'RELEASE' | 'REFUND';
 }
 
 /** States that represent a terminal escrow lifecycle — no further transitions. */
@@ -1091,8 +1093,8 @@ export class EscrowService {
 
     switch (eventType) {
       case 'EscrowFunded': {
-        if (escrow.state === 'FUNDED' || escrow.state === 'SHIPPED' || TERMINAL_STATES.has(escrow.state)) {
-          return { skipped: true, reason: 'already_funded_shipped_or_terminal' };
+        if (escrow.state !== 'CREATED') {
+          return { skipped: true, reason: 'already_funded_or_terminal' };
         }
         const funded = await this.escrowRepository.updateState(
           escrowId,
@@ -1105,7 +1107,7 @@ export class EscrowService {
       }
 
       case 'EscrowShipped': {
-        if (escrow.state === 'SHIPPED' || TERMINAL_STATES.has(escrow.state)) {
+        if (escrow.state !== 'CREATED' && escrow.state !== 'FUNDED') {
           return { skipped: true, reason: 'already_shipped_or_terminal' };
         }
         const trackingId = event.trackingId ?? escrow.trackingId ?? '';
@@ -1188,18 +1190,12 @@ export class EscrowService {
             });
           }
         }
-        const isRefund =
-          event.reason?.toLowerCase().includes('refund') ||
-          (event as any).resolution === 'refund' ||
-          (event as any).outcome === 'refund' ||
-          (event as any).winner === 'buyer';
-
-        if (isRefund) {
-          const cancelled = await this.escrowRepository.markCancelled(escrowId);
+        if (event.resolution === 'REFUND') {
+          const refunded = await this.escrowRepository.markRefunded(escrowId);
           this.notificationsService
-            .notifyCancelled(cancelled)
+            .notifyRefunded(refunded)
             .catch((err) =>
-              this.logger.error('notifyCancelled(dispute refund) failed', err),
+              this.logger.error('notifyRefunded(dispute refund) failed', err),
             );
           return { skipped: false };
         }

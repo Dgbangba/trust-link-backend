@@ -117,6 +117,31 @@ function toContractEscrowId(value: unknown): bigint | null {
   return null;
 }
 
+/**
+ * Decodes the contract's `ResolutionType` (`Release` | `Refund`) unit enum into
+ * the backend's resolution vocabulary (`RELEASE` | `REFUND`).
+ *
+ * `#[contracttype] pub enum ResolutionType { Release, Refund }` is a unit
+ * variant enum, which `scValToNative` decodes as a one-item array holding the
+ * variant name (e.g. `['Refund']` or `['Release']`). A bare string is also
+ * accepted for test doubles or pre-decoded payloads.
+ */
+function parseDisputeResolution(
+  value: unknown,
+): 'RELEASE' | 'REFUND' | undefined {
+  const variant =
+    Array.isArray(value) && value.length === 1 && typeof value[0] === 'string'
+      ? value[0]
+      : typeof value === 'string'
+        ? value
+        : undefined;
+  if (!variant) return undefined;
+  const normalized = variant.toUpperCase();
+  if (normalized === 'REFUND') return 'REFUND';
+  if (normalized === 'RELEASE') return 'RELEASE';
+  return undefined;
+}
+
 const MAX_SYNC_RETRIES = 5;
 
 @Injectable()
@@ -235,14 +260,14 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
 
   private async pollInternal(): Promise<void> {
     try {
-      let cursor = await this.cursorService.get(CursorService.SOROBAN_POLLER_KEY);
+      let cursor = await this.cursorService.get();
       if (!cursor) {
         const startLedger = await this.resolveStartLedger();
         cursor = `${LEDGER_CURSOR_PREFIX}${startLedger}`;
         // Persist before the first fetch so a restart resumes from this
         // ledger instead of computing a new starting point and skipping the
         // gap.
-        await this.cursorService.set(cursor, CursorService.SOROBAN_POLLER_KEY);
+        await this.cursorService.set(cursor);
         this.logger.log(
           `SorobanPollerService: no cursor stored — starting from ledger ${startLedger}`,
         );
@@ -257,11 +282,11 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
         if (latestLedger) {
           if (cursor.startsWith(LEDGER_CURSOR_PREFIX)) {
             const newStartLedger = Math.max(1, latestLedger - START_LEDGER_MARGIN);
-            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`, CursorService.SOROBAN_POLLER_KEY);
+            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`);
           } else {
             // Paging token cursor: reset to a fresh ledger cursor to avoid stale token retention error
             const newStartLedger = Math.max(1, latestLedger - START_LEDGER_MARGIN);
-            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`, CursorService.SOROBAN_POLLER_KEY);
+            await this.cursorService.set(`${LEDGER_CURSOR_PREFIX}${newStartLedger}`);
           }
         }
         return;
@@ -287,7 +312,7 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (lastPagingToken) {
-        await this.cursorService.set(lastPagingToken, CursorService.SOROBAN_POLLER_KEY);
+        await this.cursorService.set(lastPagingToken);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -559,6 +584,8 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
         ? raw.id
         : (typeof data?.txHash === 'string' ? data.txHash : undefined);
 
+      const resolution = parseDisputeResolution(data?.resolution);
+
       await this.escrowService.syncStateFromChain({
         eventType,
         escrowId,
@@ -570,6 +597,7 @@ export class SorobanPollerService implements OnModuleInit, OnModuleDestroy {
               : undefined,
         txHash: txHashValue,
         reason: typeof data?.reason === 'string' ? data.reason : undefined,
+        ...(resolution ? { resolution } : {}),
       });
       this.syncRetryCounts.delete(raw.id);
     } catch (err) {
